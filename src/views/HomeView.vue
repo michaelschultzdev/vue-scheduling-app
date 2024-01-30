@@ -12,6 +12,13 @@
           required
         />
 
+        <input
+          v-model="newTodoTimeToCompletion"
+          type="time"
+          @keyup.enter="addToDoItem"
+          class="border rounded-md block p-2.5 bg-gray-700 border-gray-600 placeholder-[#ffffff35] ring-transparent text-white hover:bg-gray-600 text-base tracking-normal"
+        />
+
         <button
           @click="addToDoItem"
           class="flex-0 w-32 border text-base rounded-md block p-2.5 bg-[#2C5364] border-[#356275] text-white focus:ring-[#3d7188] focus:border-[#3d7188] hover:bg-[#213f4c] hover:border-[#2a5162]"
@@ -25,7 +32,7 @@
           :key="todo.id"
           class="item bg-gradient-to-br from-[#4c7886] via-[#3b7586] to-[#3d6673] text-white px-4 py-2 rounded-lg flex justify-between items-center"
         >
-          <div v-if="!todo.editing" @click="startEditing(todo)">
+          <div v-if="!todo.editing && !todo.timeEditing" @click="startEditing(todo)">
             {{ todo.text }}
           </div>
           <input
@@ -37,12 +44,25 @@
             type="text"
             class="bg-[#ffffff5d] text-white cursor-text border-none focus:outline-none p-1 rounded-md"
           />
-          <span
-            @click="deleteToDoItem(todo.id)"
-            class="rounded-full border border-[#4b8fb4] hover:border-[#5499be] hover:text-[#ffffff] uppercase bg-gradient-to-tr from-[#182d38] to-[#05324b] hover:from-[#234a55] hover:to-[#0f333e] cursor-pointer text-xs text-[#ffffff] px-2 py-2 tracking-tighter"
-          >
-            <TrashIcon class="icon" />
-          </span>
+          <div className="flex items-center space-x-4">
+            <div v-if="!todo.editing && !todo.timeEditing" @click="startEditingTime(todo)">
+              {{ todo.timeToCompletion ? 'Due at ' + todo.timeToCompletion : 'Set due time' }}
+            </div>
+            <input
+              v-else
+              v-model="todo.timeToCompletion"
+              type="time"
+              class="bg-[#ffffff5d] flex-1 text-white cursor-text border-none focus:outline-none p-1 rounded-md"
+              @blur="stopEditingTime(todo)"
+              @keyup.enter="stopEditingTime(todo)"
+            />
+            <span
+              @click="deleteToDoItem(todo.id)"
+              class="flex-0 rounded-full border border-[#4b8fb4] hover:border-[#5499be] hover:text-[#ffffff] uppercase bg-gradient-to-tr from-[#182d38] to-[#05324b] hover:from-[#234a55] hover:to-[#0f333e] cursor-pointer text-xs text-[#ffffff] px-2 py-2 tracking-tighter"
+            >
+              <TrashIcon class="icon" />
+            </span>
+          </div>
         </div>
       </div>
     </div>
@@ -60,6 +80,8 @@ interface ToDoItem {
   text: string
   user_id: string
   editing: boolean
+  timeToCompletion?: string
+  timeEditing?: boolean // Add this property for time editing
 }
 
 const supabaseUrl = import.meta.env.VITE_URL_SUPABASE
@@ -71,9 +93,10 @@ export default {
   data() {
     return {
       newTodoText: '',
+      newTodoTimeToCompletion: '', // Add this line for time input
       todoEntries: [] as ToDoItem[],
       editItemRefs: [] as (HTMLInputElement | null)[],
-      user_id: 'a0841002-a7e7-4dbc-a090-1784dd80b6cc' // Replace with actual user ID from authentication
+      user_id: 'a0841002-a7e7-4dbc-a090-1784dd80b6cc'
     }
   },
   components: { TrashIcon },
@@ -82,11 +105,18 @@ export default {
       const trimmedText = this.newTodoText.trim()
 
       if (trimmedText !== '') {
+        const newTodoId = uuidv4()
+        const time_to_completion = this.newTodoTimeToCompletion.trim() // Get the time value
+
         try {
-          const newTodoId = uuidv4() // Generate a new UUID
-          const { error: insertError } = await supabase
-            .from('todo_items')
-            .insert([{ id: newTodoId, text: trimmedText, user_id: this.user_id }])
+          const { error: insertError } = await supabase.from('todo_items').insert([
+            {
+              id: newTodoId,
+              text: trimmedText,
+              user_id: this.user_id,
+              time_to_completion: time_to_completion
+            }
+          ])
 
           if (insertError) {
             console.error('Error adding to-do item:', insertError)
@@ -100,8 +130,17 @@ export default {
             if (selectError) {
               console.error('Error fetching newly added to-do item:', selectError)
             } else if (Array.isArray(insertedData) && insertedData.length > 0) {
-              this.todoEntries.unshift(insertedData[0])
+              this.todoEntries.unshift({
+                id: newTodoId,
+                text: trimmedText,
+                user_id: this.user_id,
+                timeToCompletion: time_to_completion,
+                editing: false,
+                timeEditing: false
+              })
+
               this.newTodoText = ''
+              this.newTodoTimeToCompletion = '' // Clear the time input
             } else {
               console.error('No data received after adding to-do item.')
             }
@@ -179,6 +218,63 @@ export default {
         }
       }
     },
+    startEditingTime(todo: ToDoItem) {
+      todo.timeEditing = true
+
+      this.$nextTick(() => {
+        const index = this.todoEntries.indexOf(todo)
+        const inputElement = this.editItemRefs[index]
+
+        if (inputElement instanceof HTMLInputElement) {
+          inputElement.focus()
+        }
+      })
+    },
+    async stopEditingTime(todo: ToDoItem) {
+      const trimmedTime = todo.timeToCompletion ? todo.timeToCompletion.trim() : ''
+
+      // Check if the trimmed time is empty, and revert if it is
+      if (trimmedTime === '') {
+        toast('Time cannot be empty or contain only white space.', {
+          theme: 'dark',
+          type: 'warning',
+          transition: 'flip',
+          dangerouslyHTMLString: true
+        })
+        return
+      } else {
+        todo.timeEditing = false
+
+        try {
+          const { error } = await supabase
+            .from('todo_items')
+            .update({ time_to_completion: trimmedTime })
+            .eq('id', todo.id)
+
+          if (error) {
+            console.error('Error updating to-do item time:', error)
+          } else {
+            // Fetch the updated record
+            const { data: updatedData, error: fetchError } = await supabase
+              .from('todo_items')
+              .select('*')
+              .eq('id', todo.id)
+
+            if (fetchError) {
+              console.error('Error fetching updated to-do item:', fetchError)
+            } else if (Array.isArray(updatedData) && updatedData.length > 0) {
+              // Update the todo.timeToCompletion with the fetched data
+              todo.timeToCompletion = updatedData[0].time_to_completion
+            } else {
+              console.error('No data received after updating to-do item time.')
+            }
+          }
+        } catch (error) {
+          console.error('Error updating to-do item time:', error)
+        }
+      }
+    },
+
     async fetchData() {
       try {
         const { data, error } = await supabase
@@ -189,7 +285,13 @@ export default {
         if (error) {
           console.error('Error fetching to-do items:', error)
         } else {
-          this.todoEntries = data
+          // Initialize the timeToCompletion property for each item
+          this.todoEntries = data.map((item: any) => ({
+            ...item,
+            timeToCompletion: item.time_to_completion || '', // Use an empty string if time_to_completion is null
+            editing: false,
+            timeEditing: false
+          }))
         }
       } catch (error) {
         console.error('Error fetching to-do items:', error)
